@@ -24,6 +24,7 @@
 #include "core/Database.h"
 #include "core/Group.h"
 #include "core/Metadata.h"
+#include "core/SyncLock.h"
 #include "gui/MessageWidget.h"
 #include "gui/entry/EntryModel.h"
 #include "remote/RemoteHandler.h"
@@ -340,6 +341,9 @@ private:
     QString m_lastSearchText;
     QString m_nextSearchLabelText;
     bool m_searchLimitGroup;
+
+    // Cloud sync soft lock
+    QScopedPointer<SyncLock> m_syncLock;
 
     // Autoreload
     bool m_blockAutoSave;

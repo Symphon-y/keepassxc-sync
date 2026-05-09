@@ -37,6 +37,9 @@ set(core_SOURCES
         core/Merger.cpp
         core/Metadata.cpp
         core/ModifiableObject.cpp
+        core/SyncCheckpoint.cpp
+        core/SyncLock.cpp
+        core/SyncMerger.cpp
         core/PasswordGenerator.cpp
         core/PasswordHealth.cpp
         core/PassphraseGenerator.cpp
@@ -129,6 +132,7 @@ set(gui_SOURCES
         gui/MainWindow.cpp
         gui/MergeDialog.cpp
         gui/MessageBox.cpp
+        gui/SyncConflictDialog.cpp
         gui/MessageWidget.cpp
         gui/PasswordWidget.cpp
         gui/PasswordGeneratorWidget.cpp

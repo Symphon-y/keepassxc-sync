@@ -206,6 +206,9 @@ public:
         Messages_NoLegacyKeyFileWarning,
         Messages_HidePreReleaseWarning,
 
+        // Cloud sync
+        SyncDeviceId,
+
         // Special internal value
         Deleted
     };

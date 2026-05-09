@@ -35,7 +35,11 @@
 #include "core/AsyncTask.h"
 #include "core/EntrySearcher.h"
 #include "core/Merger.h"
+#include "core/SyncCheckpoint.h"
+#include "core/SyncLock.h"
+#include "core/SyncMerger.h"
 #include "core/Tools.h"
+#include "gui/SyncConflictDialog.h"
 #include "gui/Clipboard.h"
 #include "gui/CloneDialog.h"
 #include "gui/DatabaseOpenDialog.h"
@@ -503,6 +507,14 @@ void DatabaseWidget::replaceDatabase(QSharedPointer<Database> db)
     emit databaseReplaced(oldDb, m_db);
 
     KeeShare::instance()->connectDatabase(m_db, oldDb);
+
+    // Acquire a soft lock so other devices see this database is in use
+    if (!m_db->filePath().isEmpty() && !m_db->isTemporaryDatabase()) {
+        m_syncLock.reset(new SyncLock(m_db->filePath()));
+        m_syncLock->acquire();
+    } else {
+        m_syncLock.reset();
+    }
 
     oldDb->releaseData();
 }
@@ -2130,6 +2142,12 @@ bool DatabaseWidget::lock()
     replaceDatabase(newDb);
 
     m_attemptingLock = false;
+
+    // Release soft lock when database is locked (user can no longer edit)
+    if (m_syncLock) {
+        m_syncLock->release();
+    }
+
     emit databaseLocked();
 
     return true;
@@ -2202,9 +2220,35 @@ void DatabaseWidget::reloadDatabaseFile(bool triggeredBySave)
     };
     auto reloadContinue = [this, triggeredBySave, reloadFinish](QSharedPointer<Database> db, bool merge) {
         if (merge) {
-            // Merge the old database into the new one
+            // 3-way sync: classify conflicts BEFORE merging so the user can
+            // decide which version wins for entries modified on both sides.
+            SyncMerger syncMerger(m_db.data(), db.data());
+            SyncMergeResult result = syncMerger.merge();
+
+            QList<SyncConflict> resolvedConflicts;
+            if (result.hasConflicts()) {
+                emit updateSyncProgress(60, tr("Sync conflicts require attention…"));
+                SyncConflictDialog conflictDlg(result.conflicts, this);
+                if (conflictDlg.exec() != QDialog::Accepted) {
+                    m_db->markAsModified();
+                    emit updateSyncProgress(100, tr("Sync canceled"));
+                    reloadFinish(false);
+                    return;
+                }
+                resolvedConflicts = conflictDlg.resolvedConflicts();
+            }
+
+            // Let the existing Merger apply all changes (uses timestamp for conflicts)
             Merger merger(m_db.data(), db.data());
             merger.merge();
+
+            // Override conflict entries with explicit user choices
+            if (!resolvedConflicts.isEmpty()) {
+                syncMerger.applyResolutions(resolvedConflicts);
+            }
+
+            // Write the merged state as the new sync checkpoint
+            SyncCheckpoint::snapshotDatabase(db.data()).saveToDatabase(db.data());
         }
 
         QUuid groupBeforeReload = m_db->rootGroup()->uuid();
@@ -2243,6 +2287,19 @@ void DatabaseWidget::reloadDatabaseFile(bool triggeredBySave)
         m_blockAutoSave = false;
         reloadFinish();
         return;
+    }
+
+    // Soft lock: warn if another device appears to have the database open
+    SyncLock syncLock(m_db->filePath());
+    {
+        SyncLock::LockInfo lockInfo;
+        if (syncLock.isLockedByOther(&lockInfo)) {
+            showMessage(tr("Warning: \"%1\" appears to be open on %2 (since %3). "
+                           "Changes from both devices will be merged automatically.")
+                            .arg(displayFileName(), lockInfo.deviceName,
+                                 lockInfo.openedAt.toLocalTime().toString(Qt::DefaultLocaleShortDate)),
+                        MessageWidget::Warning);
+        }
     }
 
     bool merge = false;
@@ -2617,6 +2674,9 @@ bool DatabaseWidget::performSave(QString& errorMessage, const QString& fileName)
 
     bool ok;
     if (fileName.isEmpty()) {
+        // Snapshot the current entry/group timestamps into CustomData before writing.
+        // This checkpoint travels with the file and serves as the 3-way merge ancestor.
+        SyncCheckpoint::snapshotDatabase(m_db.data()).saveToDatabase(m_db.data());
         ok = m_db->save(saveAction, backupFilePath, &errorMessage);
     } else {
         ok = m_db->saveAs(fileName, saveAction, backupFilePath, &errorMessage);
